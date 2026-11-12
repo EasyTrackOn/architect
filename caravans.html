@@ -2072,16 +2072,33 @@
 
         async function initializeRoleAccess() {
             try {
-                const hasOwner = await getRoleAccount('owner');
-                const hasAccountant = await getRoleAccount('accountant');
-                roleSetupAllowed = !hasOwner && !hasAccountant;
+                let hasAnyStoredUsers = false;
+                let hasOwner = false;
+                let hasAccountant = false;
+
+                if (firestoreDb) {
+                    const snapshot = await firestoreDb.collection('users').get();
+                    hasAnyStoredUsers = !snapshot.empty;
+                    snapshot.forEach(doc => {
+                        const accountRole = String(doc.data().role || doc.id).toLowerCase();
+                        if (accountRole === 'owner') hasOwner = true;
+                        if (accountRole === 'accountant') hasAccountant = true;
+                    });
+                } else {
+                    const users = JSON.parse(localStorage.getItem('ac_users') || '{}');
+                    hasAnyStoredUsers = Object.keys(users).length > 0;
+                    hasOwner = Boolean(users.owner);
+                    hasAccountant = Boolean(users.accountant);
+                }
+
+                roleSetupAllowed = !hasAnyStoredUsers;
                 document.getElementById('setupRoleAccountsBtn').classList.toggle('d-none', !roleSetupAllowed);
                 if (roleSetupAllowed) {
                     showRoleSetup();
                 } else {
                     showRoleLogin();
                     if (!hasOwner || !hasAccountant) {
-                        showAuthError('One role account is missing. Complete user setup from the Firestore console or restore the users collection.');
+                        showAuthError('The users collection already contains data, so first-time setup is disabled. Restore both Owner and Accountant accounts in Firestore.');
                     }
                 }
             } catch (err) {
@@ -2129,6 +2146,10 @@
 
         async function handleRoleSetup(event) {
             event.preventDefault();
+            if (!roleSetupAllowed) {
+                showSetupError('Setup is available only when the users collection is empty.');
+                return;
+            }
             const ownerUsername = document.getElementById('setupOwnerUsername').value.trim();
             const accountantUsername = document.getElementById('setupAccountantUsername').value.trim();
             const ownerPassword = document.getElementById('setupOwnerPassword').value;
@@ -2138,6 +2159,25 @@
                 return;
             }
             try {
+                if (firestoreDb) {
+                    const currentUsers = await firestoreDb.collection('users').get();
+                    if (!currentUsers.empty) {
+                        roleSetupAllowed = false;
+                        document.getElementById('setupRoleAccountsBtn').classList.add('d-none');
+                        showRoleLogin();
+                        showAuthError('The users collection is no longer empty. First-time setup has been disabled.');
+                        return;
+                    }
+                } else {
+                    const currentUsers = JSON.parse(localStorage.getItem('ac_users') || '{}');
+                    if (Object.keys(currentUsers).length) {
+                        roleSetupAllowed = false;
+                        document.getElementById('setupRoleAccountsBtn').classList.add('d-none');
+                        showRoleLogin();
+                        showAuthError('User accounts are already configured in this browser.');
+                        return;
+                    }
+                }
                 const accounts = [];
                 for (const [id, role, username, password, displayName] of [
                     ['owner', 'Owner', ownerUsername, ownerPassword, 'Ashfaq'],
