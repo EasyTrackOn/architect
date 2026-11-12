@@ -317,7 +317,7 @@
             <!-- Right Tools: Sync, Audit Status & User Switcher -->
             <div class="d-flex align-items-center gap-2 ms-auto ms-md-0">
                 <!-- Firebase Sync & Backup Status Pill -->
-                <button id="btnCloudSync" class="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 rounded-pill px-2 px-md-3" onclick="openCloudConfigModal()" title="Firebase Sync & Drive Backup Settings">
+                <button id="btnCloudSync" class="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 rounded-pill px-2 px-md-3" onclick="openCloudConfigModal()" title="Google Drive Proof & Backup Settings">
                     <i id="syncStatusIcon" class="bi bi-cloud-check-fill text-success"></i>
                     <span id="syncStatusLabel" class="small fw-semibold d-none d-md-inline">Synced</span>
                 </button>
@@ -1350,7 +1350,7 @@
                         <div class="row g-3">
                             <div class="col-12">
                                 <label class="form-label small fw-bold">Google Apps Script Web App URL (Proof Upload, Voucher Register & 3-Day Backup)</label>
-                                <input type="url" id="cfgGasUrl" class="form-control form-control-sm" placeholder="https://script.google.com/macros/s/AKfycbzXHptMYyBsLyekY60oaUbwxJAc155CCBVnKs6-nArg8yiEAg_nNAx_IEl_Z64wXtNn/exec">
+                                <input type="url" id="cfgGasUrl" class="form-control form-control-sm" placeholder="https://script.google.com/macros/s/AKfycbzXHptMYyBsLyekY60oaUbwxJAc155CCBVnKs6-nArg8yiEAg_nNAx_IEl_Z64wXtNn/exec" value="https://script.google.com/macros/s/AKfycbzXHptMYyBsLyekY60oaUbwxJAc155CCBVnKs6-nArg8yiEAg_nNAx_IEl_Z64wXtNn/exec">
                                 <small class="text-muted">Deploy <code>Code.gs</code> as a Web App (execute as you; restrict access to trusted Google accounts), paste its URL, then run <code>setupThreeDayBackupTrigger()</code> once in Apps Script. Proof images are resized and compressed before upload.</small>
                             </div>
                             <div class="col-12">
@@ -2250,10 +2250,13 @@
                     return;
                 }
                 const passwordHash = await deriveRolePasswordHash(password, account.salt);
+                console.log(passwordHash);
+                console.log(account.passwordHash);
                 if (passwordHash !== account.passwordHash) {
                     showAuthError('Username or password is incorrect.');
                     return;
                 }
+                
                 currentRole = account.role;
                 currentUsername = account.username;
                 document.getElementById('authGate').classList.add('d-none');
@@ -2302,7 +2305,7 @@
 
         function openCloudConfigModal() {
             const cfg = JSON.parse(localStorage.getItem('ac_cloud_config') || '{}');
-            document.getElementById('cfgGasUrl').value = cfg.gasUrl || '';
+            document.getElementById('cfgGasUrl').value = cfg.gasUrl || 'https://script.google.com/macros/s/AKfycbzXHptMYyBsLyekY60oaUbwxJAc155CCBVnKs6-nArg8yiEAg_nNAx_IEl_Z64wXtNn/exec';
             updateCloudModalStatusText();
             cloudConfigModal.show();
         }
@@ -2313,14 +2316,13 @@
                 gasUrl: document.getElementById('cfgGasUrl').value.trim()
             };
             localStorage.setItem('ac_cloud_config', JSON.stringify(cfg));
-            initFirebaseIfConfigured();
-            if (firestoreDb) {
-                const localUsers = JSON.parse(localStorage.getItem('ac_users') || '{}');
-                const accounts = Object.values(localUsers);
-                if (accounts.length) await saveRoleAccounts(accounts);
-            }
             cloudConfigModal.hide();
-            await forceDeltaSyncNow();
+            try {
+                await syncDriveSnapshot();
+            } catch (syncError) {
+                console.error('Drive snapshot sync failed:', syncError);
+                alert(`Drive settings were saved, but the backup snapshot could not be updated: ${syncError.message}`);
+            }
             await checkAndRunThreeDayBackup(false);
         }
 
