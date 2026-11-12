@@ -273,7 +273,7 @@
                 <button id="setupRoleAccountsBtn" type="button" class="btn btn-link btn-sm w-100 mt-2 d-none" onclick="showRoleSetup()">First time? Set up Owner and Accountant</button>
             </form>
             <form id="roleSetupForm" class="d-none" onsubmit="handleRoleSetup(event)">
-                <p class="small text-muted">Create both role accounts. Passwords are stored as salted hashes in the <code>users</code> collection when Firestore is configured; otherwise they stay in this browser.</p>
+                <p id="roleSetupHelp" class="small text-muted">Create missing role accounts. Existing accounts will not be changed. Passwords are stored as salted hashes in the <code>users</code> collection when Firestore is configured; otherwise they stay in this browser.</p>
                 <div class="border rounded-3 p-3 mb-3">
                     <h6 class="fw-bold">Owner</h6>
                     <input id="setupOwnerUsername" class="form-control mb-2" placeholder="Username" autocomplete="username" required>
@@ -1415,7 +1415,6 @@
          */
         let firestoreDb = null;
         
-
         function initFirebaseIfConfigured() {
             if (typeof firebase !== 'undefined') {
                 try {
@@ -2012,6 +2011,7 @@
         let currentRole = 'Owner';
         let currentUsername = '';
         let roleSetupAllowed = false;
+        let missingRoleAccounts = { owner: true, accountant: true };
         let selectedProjectId = 'ALL';
         let categoriesData = [];
         let workersData = [];
@@ -2065,41 +2065,61 @@
                 showAuthError('Role accounts are already configured. Contact the owner to change them.');
                 return;
             }
+            updateRoleSetupFields();
             document.getElementById('roleLoginForm').classList.add('d-none');
             document.getElementById('roleSetupForm').classList.remove('d-none');
             document.getElementById('setupError').classList.add('d-none');
         }
 
+        function updateRoleSetupFields() {
+            for (const role of ['owner', 'accountant']) {
+                const title = role === 'owner' ? 'Owner' : 'Accountant';
+                const usernameInput = document.getElementById(`setup${title}Username`);
+                const passwordInput = document.getElementById(`setup${title}Password`);
+                const card = usernameInput.closest('.border');
+                const heading = card.querySelector('h6');
+                const isMissing = missingRoleAccounts[role];
+                heading.textContent = isMissing ? title : `${title} (already configured)`;
+                usernameInput.required = isMissing;
+                passwordInput.required = isMissing;
+                usernameInput.disabled = !isMissing;
+                passwordInput.disabled = !isMissing;
+                if (!isMissing) {
+                    usernameInput.value = '';
+                    passwordInput.value = '';
+                }
+            }
+        }
+
+        function getMissingRoleAccounts(users) {
+            const roles = { owner: false, accountant: false };
+            users.forEach(user => {
+                const role = String(user.role || user.id || '').toLowerCase();
+                if (role === 'owner') roles.owner = true;
+                if (role === 'accountant') roles.accountant = true;
+            });
+            return { owner: !roles.owner, accountant: !roles.accountant };
+        }
+
         async function initializeRoleAccess() {
             try {
-                let hasAnyStoredUsers = false;
-                let hasOwner = false;
-                let hasAccountant = false;
-
                 if (firestoreDb) {
                     const snapshot = await firestoreDb.collection('users').get();
-                    hasAnyStoredUsers = !snapshot.empty;
-                    snapshot.forEach(doc => {
-                        const accountRole = String(doc.data().role || doc.id).toLowerCase();
-                        if (accountRole === 'owner') hasOwner = true;
-                        if (accountRole === 'accountant') hasAccountant = true;
-                    });
+                    missingRoleAccounts = getMissingRoleAccounts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
                 } else {
                     const users = JSON.parse(localStorage.getItem('ac_users') || '{}');
-                    hasAnyStoredUsers = Object.keys(users).length > 0;
-                    hasOwner = Boolean(users.owner);
-                    hasAccountant = Boolean(users.accountant);
+                    missingRoleAccounts = {
+                        owner: !users.owner,
+                        accountant: !users.accountant
+                    };
                 }
 
-                roleSetupAllowed = !hasAnyStoredUsers;
+                roleSetupAllowed = missingRoleAccounts.owner || missingRoleAccounts.accountant;
                 document.getElementById('setupRoleAccountsBtn').classList.toggle('d-none', !roleSetupAllowed);
                 if (roleSetupAllowed) {
                     showRoleSetup();
                 } else {
                     showRoleLogin();
-                    if (!hasOwner || !hasAccountant) {
-                        showAuthError('The users collection already contains data, so first-time setup is disabled. Restore both Owner and Accountant accounts in Firestore.');
-                    }
                 }
             } catch (err) {
                 roleSetupAllowed = false;
@@ -2138,7 +2158,7 @@
                 });
                 await batch.commit();
             } else {
-                const users = {};
+                const users = JSON.parse(localStorage.getItem('ac_users') || '{}');
                 accounts.forEach(account => { users[account.id] = { ...account, updatedAt }; });
                 localStorage.setItem('ac_users', JSON.stringify(users));
             }
@@ -2147,42 +2167,44 @@
         async function handleRoleSetup(event) {
             event.preventDefault();
             if (!roleSetupAllowed) {
-                showSetupError('Setup is available only when the users collection is empty.');
+                showSetupError('Setup is available only when an Owner or Accountant account is missing.');
                 return;
             }
             const ownerUsername = document.getElementById('setupOwnerUsername').value.trim();
             const accountantUsername = document.getElementById('setupAccountantUsername').value.trim();
             const ownerPassword = document.getElementById('setupOwnerPassword').value;
             const accountantPassword = document.getElementById('setupAccountantPassword').value;
-            if (ownerUsername.toLowerCase() === accountantUsername.toLowerCase()) {
+            if (missingRoleAccounts.owner && missingRoleAccounts.accountant &&
+                ownerUsername.toLowerCase() === accountantUsername.toLowerCase()) {
                 showSetupError('Owner and Accountant usernames must be different.');
                 return;
             }
             try {
+                let existingUsers = {};
                 if (firestoreDb) {
                     const currentUsers = await firestoreDb.collection('users').get();
-                    if (!currentUsers.empty) {
-                        roleSetupAllowed = false;
-                        document.getElementById('setupRoleAccountsBtn').classList.add('d-none');
-                        showRoleLogin();
-                        showAuthError('The users collection is no longer empty. First-time setup has been disabled.');
-                        return;
-                    }
+                    missingRoleAccounts = getMissingRoleAccounts(currentUsers.docs.map(doc => ({ id: doc.id, ...doc.data() })));
                 } else {
-                    const currentUsers = JSON.parse(localStorage.getItem('ac_users') || '{}');
-                    if (Object.keys(currentUsers).length) {
-                        roleSetupAllowed = false;
-                        document.getElementById('setupRoleAccountsBtn').classList.add('d-none');
-                        showRoleLogin();
-                        showAuthError('User accounts are already configured in this browser.');
-                        return;
-                    }
+                    existingUsers = JSON.parse(localStorage.getItem('ac_users') || '{}');
+                    missingRoleAccounts = {
+                        owner: !existingUsers.owner,
+                        accountant: !existingUsers.accountant
+                    };
                 }
+                roleSetupAllowed = missingRoleAccounts.owner || missingRoleAccounts.accountant;
+                if (!roleSetupAllowed) {
+                    document.getElementById('setupRoleAccountsBtn').classList.add('d-none');
+                    showRoleLogin();
+                    showAuthError('Both role accounts are now configured. Sign in to continue.');
+                    return;
+                }
+                updateRoleSetupFields();
                 const accounts = [];
                 for (const [id, role, username, password, displayName] of [
                     ['owner', 'Owner', ownerUsername, ownerPassword, 'Ashfaq'],
                     ['accountant', 'Accountant', accountantUsername, accountantPassword, 'Najeeba']
                 ]) {
+                    if (!missingRoleAccounts[id]) continue;
                     const salt = crypto.getRandomValues(new Uint8Array(16));
                     const saltHex = bytesToHex(salt);
                     accounts.push({
@@ -2190,8 +2212,24 @@
                         passwordHash: await deriveRolePasswordHash(password, saltHex)
                     });
                 }
-                await saveRoleAccounts(accounts);
+                if (firestoreDb) {
+                    const usersCollection = firestoreDb.collection('users');
+                    await firestoreDb.runTransaction(async transaction => {
+                        const refs = accounts.map(account => usersCollection.doc(account.id));
+                        const snapshots = [];
+                        for (const ref of refs) snapshots.push(await transaction.get(ref));
+                        if (snapshots.some(snapshot => snapshot.exists)) {
+                            throw new Error('A role account was created while setup was in progress. Reload the page and try again.');
+                        }
+                        accounts.forEach((account, index) => {
+                            transaction.set(refs[index], { ...account, updatedAt: new Date().toISOString() });
+                        });
+                    });
+                } else {
+                    await saveRoleAccounts(accounts);
+                }
                 roleSetupAllowed = false;
+                missingRoleAccounts = { owner: false, accountant: false };
                 document.getElementById('setupRoleAccountsBtn').classList.add('d-none');
                 document.getElementById('roleSetupForm').reset();
                 showRoleLogin();
